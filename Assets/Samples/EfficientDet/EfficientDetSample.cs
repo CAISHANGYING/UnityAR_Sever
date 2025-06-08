@@ -5,6 +5,8 @@ using TextureSource;
 using TMPro;
 using NativeWebSocket;
 using System.Collections.Generic;
+using System;
+using Newtonsoft.Json;
 
 
 [RequireComponent(typeof(VirtualTextureSource))]
@@ -12,18 +14,34 @@ public class EfficientDetSample : MonoBehaviour
 {
     private WebSocket websocket;
 
+    [Serializable]
+    public class Coordinate
+    {
+        public float[] left_top;
+        public float[] right_bottom;
+        public float[] middle;
+    }
+
     [System.Serializable]
     public class HoleInfo
     {
-        public float x;
-        public float y;
-        public float score;
+        public string tag;
+        public Coordinate coordinate;
+        public float width;
+        public float height;
+        public float[] xywh;
+        public string status;
     }
 
     [System.Serializable]
     public class HoleWrapper
     {
-        public List<HoleInfo> holes;
+        // 動態 key（a、b、c…），對應每個 HoleInfo
+        public Dictionary<string, HoleInfo> hole;
+
+        // wrench 和 boundary
+        public Dictionary<string, object> wrench = new Dictionary<string, object>();
+        public float[] boundary = new float[0];
     }
 
 
@@ -94,11 +112,30 @@ public class EfficientDetSample : MonoBehaviour
 
     private async void SendHoleData(List<HoleInfo> holes)
     {
-        if (websocket != null && websocket.State == WebSocketState.Open && holes.Count > 0)
+        if (websocket != null
+            && websocket.State == WebSocketState.Open
+            && holes != null
+            && holes.Count > 0)
         {
-            HoleWrapper wrapper = new HoleWrapper { holes = holes };
-            string json = JsonUtility.ToJson(wrapper);
-            Debug.Log("傳送 JSON: " + json);
+            // 1. 建立 wrapper 並初始化 Dictionary
+            HoleWrapper wrapper = new HoleWrapper();
+            wrapper.hole = new Dictionary<string, HoleInfo>();
+
+            // 2. 將 List 轉成 key 為 a, b, c… 的 Dictionary
+            for (int i = 0; i < holes.Count; i++)
+            {
+                // a → 'a'+0, b → 'a'+1, …
+                string key = ((char)('a' + i)).ToString();
+                wrapper.hole[key] = holes[i];
+            }
+
+            // 3. （wrench、boundary 已在 HoleWrapper ctor 預設好）
+
+            // 4. 用 JsonConvert 來序列化 Dictionary
+            string json = JsonConvert.SerializeObject(wrapper);
+            Debug.Log("JSON: " + json);
+
+            // 5. 傳送
             await websocket.SendText(json);
         }
     }
@@ -146,7 +183,7 @@ public class EfficientDetSample : MonoBehaviour
         // 顯示到 TMP UI 上
         holeInfoTMP.text = sb.ToString();
         // 傳送孔洞資訊給後端
-        List<HoleInfo> holes = new();
+        List<HoleInfo> holes = new List<HoleInfo>();
 
         for (int i = 0; i < results.Length; i++)
         {
@@ -158,18 +195,23 @@ public class EfficientDetSample : MonoBehaviour
 
                 holes.Add(new HoleInfo
                 {
-                    x = centerX,
-                    y = centerY,
-                    score = results[i].score
+                    tag = "0",  // 如果要動態改 tag，可以再調整
+                    coordinate = new Coordinate
+                    {
+                        left_top = new float[] { r.xMin * texture.width, r.yMin * texture.height },
+                        right_bottom = new float[] { r.xMax * texture.width, r.yMax * texture.height },
+                        middle = new float[] { centerX * texture.width, centerY * texture.height }
+                    },
+                    width = r.width * texture.width,
+                    height = r.height * texture.height,
+                    xywh = new float[] { centerX * texture.width, centerY * texture.height, r.width * texture.width, r.height * texture.height },
+                    status = "hole"  // 或 "lock_hole"，依你的邏輯
                 });
             }
         }
 
         if (websocket != null && websocket.State == WebSocketState.Open && holes.Count > 0)
         {
-            HoleWrapper wrapper = new HoleWrapper { holes = holes };
-            string json = JsonUtility.ToJson(wrapper);
-            Debug.Log(" 傳送 JSON: " + json);
             SendHoleData(holes);
         }
     }
