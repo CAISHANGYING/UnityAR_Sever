@@ -7,11 +7,19 @@ using NativeWebSocket;
 using System.Collections.Generic;
 using System;
 using Newtonsoft.Json;
+using System.Text;
+using Newtonsoft.Json.Linq;
+
+
+////github https://github.com/PimDeWitte/UnityMainThreadDispatcher
+//using UnityMainThreadDispatcher;  // 或是對應的 namespace
+
 
 
 [RequireComponent(typeof(VirtualTextureSource))]
 public class EfficientDetSample : MonoBehaviour
 {
+
     private WebSocket websocket;
 
     [Serializable]
@@ -68,6 +76,46 @@ public class EfficientDetSample : MonoBehaviour
     private Text[] frames;
     private string[] labels;
 
+    private Dictionary<string, HoleInfo> pendingPushbacks;
+    private string lastDetectionInfo = "";
+
+    [Serializable]
+    public class PushbackWrapper
+    {
+        public Dictionary<string, HoleInfo> pushback_positions;
+    }
+
+private void Update()
+{
+    websocket?.DispatchMessageQueue();
+
+        if (pendingPushbacks != null)
+        {
+            // 1. 組出回推的 tag 列表
+            var sb = new StringBuilder();
+            sb.AppendLine("Returned Tags:");
+            foreach (var kv in pendingPushbacks)
+            {
+                // kv.Key 是 a, b, c...；kv.Value.tag 才是後端回傳的數字
+                sb.AppendLine($"{kv.Key}: tag = {kv.Value.tag}");
+            }
+            sb.AppendLine();
+
+            // 2. 接著把最後一次的偵測結果貼在後面
+            sb.Append(lastDetectionInfo);
+
+            // 3. 顯示到同一個 TMP
+            holeInfoTMP.text = sb.ToString();
+
+            // 4. 照常畫框
+            DrawPushbackFrames(pendingPushbacks);
+            pendingPushbacks = null;
+        }
+    }
+
+
+
+
     private async void Start()
     {
         efficientDet = new EfficientDet(options);
@@ -82,7 +130,8 @@ public class EfficientDetSample : MonoBehaviour
         }
 
         // Label
-        labels = labelMap.text.Split('\n');
+        labels = labelMap.text
+       .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
         // 啟動 TFLite 輸入
         if (TryGetComponent(out VirtualTextureSource source))
@@ -96,6 +145,41 @@ public class EfficientDetSample : MonoBehaviour
         websocket.OnOpen += () => Debug.Log("WebSocket Connected!");
         websocket.OnError += (e) => Debug.Log(" WebSocket Error: " + e);
         websocket.OnClose += (e) => Debug.Log(" WebSocket Closed!");
+
+        websocket.OnMessage += (bytes) =>
+        {
+            var json = Encoding.UTF8.GetString(bytes);
+            Debug.Log($"[WebSocket] Received JSON: {json}");
+
+            try
+            {
+                // 先 parse 成 JObject
+                var jObj = JObject.Parse(json);
+                // 準備要塞給 Update() 畫框的字典
+                Dictionary<string, HoleInfo> dict;
+                if (jObj["hole"] != null)
+                {
+                    // 有外層 hole 屬性，就讀裡面的那個
+                    dict = jObj["hole"]
+                        .ToObject<Dictionary<string, HoleInfo>>();
+                }
+                else
+                {
+                    // 沒有外層 hole，就直接把根物件當作字典
+                    dict = jObj
+                        .ToObject<Dictionary<string, HoleInfo>>();
+                }
+
+                pendingPushbacks = dict;
+                Debug.Log($"[WebSocket] Parsed holes: count={pendingPushbacks.Count}, keys={string.Join(",", pendingPushbacks.Keys)}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[WebSocket] JSON parse error: {ex}");
+            }
+        };
+
+
 
         await websocket.Connect();
     }
@@ -140,9 +224,14 @@ public class EfficientDetSample : MonoBehaviour
         }
     }
 
+    private int lastTextureWidth;
+    private int lastTextureHeight;
 
     private void Invoke(Texture texture)
     {
+
+        lastTextureWidth = texture.width;
+        lastTextureHeight = texture.height;
         // 執行推論
         efficientDet.Run(texture);
 
@@ -181,7 +270,8 @@ public class EfficientDetSample : MonoBehaviour
         }
 
         // 顯示到 TMP UI 上
-        holeInfoTMP.text = sb.ToString();
+        lastDetectionInfo = sb.ToString();
+        holeInfoTMP.text = lastDetectionInfo;
         // 傳送孔洞資訊給後端
         List<HoleInfo> holes = new List<HoleInfo>();
 
@@ -198,14 +288,14 @@ public class EfficientDetSample : MonoBehaviour
                     tag = "0",  // 如果要動態改 tag，可以再調整
                     coordinate = new Coordinate
                     {
-                        left_top = new float[] { r.xMin * texture.width, r.yMin * texture.height },
-                        right_bottom = new float[] { r.xMax * texture.width, r.yMax * texture.height },
-                        middle = new float[] { centerX * texture.width, centerY * texture.height }
+                        left_top = new float[] { Mathf.Round(r.xMin * texture.width * 10f) / 10f, Mathf.Round(r.yMin * texture.height * 10f) / 10f },
+                        right_bottom = new float[] { Mathf.Round(r.xMax * texture.width * 10f) / 10f, Mathf.Round(r.yMax * texture.height * 10f) / 10f },
+                        middle = new float[] { Mathf.Round(centerX * texture.width * 10f) / 10f, Mathf.Round(centerY * texture.height * 10f) / 10f }
                     },
-                    width = r.width * texture.width,
-                    height = r.height * texture.height,
-                    xywh = new float[] { centerX * texture.width, centerY * texture.height, r.width * texture.width, r.height * texture.height },
-                    status = "hole"  // 或 "lock_hole"，依你的邏輯
+                    width = Mathf.Round(r.width * texture.width * 10f) / 10f,
+                    height = Mathf.Round(r.height * texture.height * 10f) / 10f,
+                    xywh = new float[] { Mathf.Round(centerX * texture.width * 10f) / 10f, Mathf.Round(centerY * texture.height * 10f) / 10f, Mathf.Round(r.width * texture.width * 10f) / 10f, Mathf.Round(r.height * texture.height * 10f) / 10f },
+                    status = $"{GetLabelName(results[i].classID)}"
                 });
             }
         }
@@ -215,10 +305,6 @@ public class EfficientDetSample : MonoBehaviour
             SendHoleData(holes);
         }
     }
-    private void Update()
-    {
-        websocket?.DispatchMessageQueue();
-    }
 
     private async void OnApplicationQuit()
     {
@@ -226,7 +312,71 @@ public class EfficientDetSample : MonoBehaviour
     }
 
 
+    private void DrawPushbackFrames(Dictionary<string, HoleInfo> dict)
+    {
+        // 先把所有 frame 隱藏
+        foreach (var f in frames) f.gameObject.SetActive(false);
 
+        // 跑回推字典
+        int idx = 0;
+        // 取出 UI 尺寸：要跟 Invoke 裡一樣
+        Vector2 texSize = new Vector2(lastTextureWidth, lastTextureHeight);
+        Vector2 containerSize = (frameContainer.transform as RectTransform).rect.size;
+        float aspect = texSize.x / texSize.y;
+        Vector2 ratio = aspect > 1
+            ? new Vector2(1.0f, 1 / aspect)
+            : new Vector2(aspect, 1.0f);
+        Vector2 uiSize = containerSize * ratio;
+
+        foreach (var kv in dict)
+        {
+            if (idx >= frames.Length) break;
+            SetFrame(frames[idx], kv.Value, texSize, uiSize, idx);
+            idx++;
+        }
+    }
+
+
+    private void SetFrame(Text frame,
+                      HoleInfo info,
+                      Vector2 textureSize,   // texture.width, texture.height
+                      Vector2 uiSize,        // size * ratio
+                      int displayIndex)      // 0,1,2... 對應 a,b,c...
+    {
+        frame.gameObject.SetActive(true);
+
+        // tag 是字串序號，我們先轉成 int
+        string returnedTag = info.tag;
+
+        // 2. 为了让每个框前面也有 a、b、c…… 的标识
+        char letter = (char)('a' + displayIndex);
+
+        // 3. 把 tag 转成 int，以便拿分类名称（如果你的标签映射是按数字来的）
+        int tagId = int.Parse(returnedTag);
+        string name = GetLabelName(tagId);
+
+
+        frame.text = $"{displayIndex + 1}. [{letter}] {name} (tag={returnedTag})";
+        // xywh = [centerX, centerY, w, h]（都是像素）
+        float cx = info.xywh[0],
+              cy = info.xywh[1],
+              w = info.xywh[2],
+              h = info.xywh[3];
+
+        // 先把像素換成 normalized 再到 UI 空間
+        float nx = cx / textureSize.x;
+        float ny = cy / textureSize.y;
+        float nw = w / textureSize.x;
+        float nh = h / textureSize.y;
+
+        var rt = frame.transform as RectTransform;
+        // normalized 0~1 轉 anchoredPosition, sizeDelta
+        rt.anchoredPosition = new Vector2(
+            nx * uiSize.x - uiSize.x * 0.5f,
+            ny * uiSize.y - uiSize.y * 0.5f
+        );
+        rt.sizeDelta = new Vector2(nw * uiSize.x, nh * uiSize.y);
+    }
     private void SetFrame(Text frame, EfficientDet.Result result, Vector2 size)
     {
         // 如果分數低於閾值，就隱藏不顯示
@@ -256,6 +406,6 @@ public class EfficientDetSample : MonoBehaviour
         {
             return "?";
         }
-        return labels[id];
+        return labels[id].Trim();
     }
 }
