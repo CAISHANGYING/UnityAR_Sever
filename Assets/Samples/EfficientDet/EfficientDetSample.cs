@@ -85,29 +85,13 @@ public class EfficientDetSample : MonoBehaviour
         public Dictionary<string, HoleInfo> pushback_positions;
     }
 
-private void Update()
-{
-    websocket?.DispatchMessageQueue();
+    private void Update()
+    {
+        websocket?.DispatchMessageQueue();
 
         if (pendingPushbacks != null)
         {
-            // 1. 組出回推的 tag 列表
-            var sb = new StringBuilder();
-            sb.AppendLine("Returned Tags:");
-            foreach (var kv in pendingPushbacks)
-            {
-                // kv.Key 是 a, b, c...；kv.Value.tag 才是後端回傳的數字
-                sb.AppendLine($"{kv.Key}: tag = {kv.Value.tag}");
-            }
-            sb.AppendLine();
-
-            // 2. 接著把最後一次的偵測結果貼在後面
-            sb.Append(lastDetectionInfo);
-
-            // 3. 顯示到同一個 TMP
-            holeInfoTMP.text = sb.ToString();
-
-            // 4. 照常畫框
+            // 只画框，不改 TMP 文本
             DrawPushbackFrames(pendingPushbacks);
             pendingPushbacks = null;
         }
@@ -146,36 +130,27 @@ private void Update()
         websocket.OnError += (e) => Debug.Log(" WebSocket Error: " + e);
         websocket.OnClose += (e) => Debug.Log(" WebSocket Closed!");
 
-        websocket.OnMessage += (bytes) =>
+        websocket.OnMessage += bytes =>
         {
             var json = Encoding.UTF8.GetString(bytes);
-            Debug.Log($"[WebSocket] Received JSON: {json}");
+            var jObj = JObject.Parse(json);
 
-            try
+            // 1. 先尝试读 pushback_positions
+            Dictionary<string, HoleInfo> dict = null;
+            if (jObj["pushback_positions"] != null)
             {
-                // 先 parse 成 JObject
-                var jObj = JObject.Parse(json);
-                // 準備要塞給 Update() 畫框的字典
-                Dictionary<string, HoleInfo> dict;
-                if (jObj["hole"] != null)
-                {
-                    // 有外層 hole 屬性，就讀裡面的那個
-                    dict = jObj["hole"]
-                        .ToObject<Dictionary<string, HoleInfo>>();
-                }
-                else
-                {
-                    // 沒有外層 hole，就直接把根物件當作字典
-                    dict = jObj
-                        .ToObject<Dictionary<string, HoleInfo>>();
-                }
-
-                pendingPushbacks = dict;
-                Debug.Log($"[WebSocket] Parsed holes: count={pendingPushbacks.Count}, keys={string.Join(",", pendingPushbacks.Keys)}");
+                dict = jObj["pushback_positions"]
+                    .ToObject<Dictionary<string, HoleInfo>>();
             }
-            catch (Exception ex)
+            else if (jObj["hole"] != null)
             {
-                Debug.LogError($"[WebSocket] JSON parse error: {ex}");
+                dict = jObj["hole"]
+                    .ToObject<Dictionary<string, HoleInfo>>();
+            }
+
+            if (dict != null && dict.Count > 0)
+            {
+                pendingPushbacks = dict;
             }
         };
 
@@ -314,33 +289,50 @@ private void Update()
 
     private void DrawPushbackFrames(Dictionary<string, HoleInfo> dict)
     {
-        // 跟原本一樣算好 UI 大小
+        // 1. 准备好 texture 大小 & UI 容器大小
         Vector2 texSize = new Vector2(lastTextureWidth, lastTextureHeight);
-        Vector2 containerSize = (frameContainer.transform as RectTransform).rect.size;
+        var containerRect = frameContainer.transform as RectTransform;
+        Vector2 containerSize = containerRect.rect.size;
         float aspect = texSize.x / texSize.y;
-        Vector2 ratio = aspect > 1
-            ? new Vector2(1.0f, 1 / aspect)
-            : new Vector2(aspect, 1.0f);
+        Vector2 ratio = aspect > 1f
+            ? new Vector2(1f, 1f / aspect)
+            : new Vector2(aspect, 1f);
         Vector2 uiSize = containerSize * ratio;
 
+        // 2. 对每个 key=a,b,c…，把对应的 HoleInfo 画上去
         foreach (var kv in dict)
         {
-            // kv.Key = "a","b","c" … → 轉成 0,1,2…
             int idx = kv.Key[0] - 'a';
             if (idx < 0 || idx >= frames.Length) continue;
 
             var info = kv.Value;
             var frame = frames[idx];
+            frame.gameObject.SetActive(true);
 
-            // 把原本的文字保留，再加上後端回推的 tag
+            // 3. 显示后端回推的 tag
             frame.text = info.tag;
 
-            // （選擇性）把文字往框的右邊移一點：
+            // 4. 拿到中心点和宽高（像素）
+            float cx = info.xywh[0], cy = info.xywh[1];
+            float w = info.xywh[2], h = info.xywh[3];
+
+            // 5. 归一化到 0~1，然后映射到 UI 空间
+            float nx = cx / texSize.x;
+            float ny = cy / texSize.y;
+            float nw = w / texSize.x;
+            float nh = h / texSize.y;
+
             var rt = frame.transform as RectTransform;
-            rt.anchoredPosition += new Vector2(rt.sizeDelta.x / 2 + 10, 0);
+            rt.sizeDelta = new Vector2(nw * uiSize.x, nh * uiSize.y);
+            rt.anchoredPosition = new Vector2(
+                nx * uiSize.x - uiSize.x * 0.5f,
+                ny * uiSize.y - uiSize.y * 0.5f
+            );
+
+            // 6. 可选：把文字往框右边偏移一点
+            rt.anchoredPosition += new Vector2(rt.sizeDelta.x * 0.5f + 5f, 0f);
         }
     }
-
 
 
     private void SetFrame(Text frame,
