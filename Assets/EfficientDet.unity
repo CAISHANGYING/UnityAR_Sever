@@ -864,7 +864,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   options:
     modelPath: efficientdet_lite2.tflite
-    aspectMode: 0
+    aspectMode: 1
     delegateType: 2
   frameContainer: {fileID: 2074584280}
   framePrefab: {fileID: 5133934790876113832, guid: 855fd763867d5c1448a5fc494c761db7,

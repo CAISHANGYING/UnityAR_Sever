@@ -314,12 +314,7 @@ private void Update()
 
     private void DrawPushbackFrames(Dictionary<string, HoleInfo> dict)
     {
-        // 先把所有 frame 隱藏
-        foreach (var f in frames) f.gameObject.SetActive(false);
-
-        // 跑回推字典
-        int idx = 0;
-        // 取出 UI 尺寸：要跟 Invoke 裡一樣
+        // 跟原本一樣算好 UI 大小
         Vector2 texSize = new Vector2(lastTextureWidth, lastTextureHeight);
         Vector2 containerSize = (frameContainer.transform as RectTransform).rect.size;
         float aspect = texSize.x / texSize.y;
@@ -330,11 +325,22 @@ private void Update()
 
         foreach (var kv in dict)
         {
-            if (idx >= frames.Length) break;
-            SetFrame(frames[idx], kv.Value, texSize, uiSize, idx);
-            idx++;
+            // kv.Key = "a","b","c" … → 轉成 0,1,2…
+            int idx = kv.Key[0] - 'a';
+            if (idx < 0 || idx >= frames.Length) continue;
+
+            var info = kv.Value;
+            var frame = frames[idx];
+
+            // 把原本的文字保留，再加上後端回推的 tag
+            frame.text = info.tag;
+
+            // （選擇性）把文字往框的右邊移一點：
+            var rt = frame.transform as RectTransform;
+            rt.anchoredPosition += new Vector2(rt.sizeDelta.x / 2 + 10, 0);
         }
     }
+
 
 
     private void SetFrame(Text frame,
@@ -391,7 +397,7 @@ private void Update()
         }
 
         // 取得對應的類別名稱
-        frame.text = $"{GetLabelName(result.classID)} : {(int)(result.score * 100)}%";
+        frame.text = $"{GetLabelName(result.classID)}";
 
         // 依照偵測出的框座標，設定在 Unity UI 裡的位置與大小
         var rt = frame.transform as RectTransform;
